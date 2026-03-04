@@ -330,26 +330,6 @@ async def discovery_loop(
                 print(f"\n  ⏱️  Batch time: {batch_time:.2f}s")
                 print(f"  📈 Throughput: {len(new_addrs) / batch_time:.1f} wallets/s")
 
-                # 4. Discord notification every 10 high-signal traders
-                if discord_bot:
-                    current_count = len(state.master_profiles)
-                    if (
-                        current_count > 0
-                        and current_count % 10 == 0
-                        and state.last_notified_count < current_count
-                    ):
-                        state.last_notified_count = current_count
-                        print(
-                            f"\n📱 Discord: Sending update ({current_count} monitored)...",
-                            flush=True,
-                        )
-                        try:
-                            discord_bot.send_summary_table(
-                                list(state.master_profiles.values())
-                            )
-                        except Exception as e:
-                            print(f"\n❌ Discord error: {e}", flush=True)
-
             # 5. Status update
             elapsed = time.time() - state.start_time
             print(
@@ -360,6 +340,28 @@ async def discovery_loop(
 
             # Sleep to prevent CPU spinning
             await asyncio.sleep(2)
+
+            # 6. Discord notification every 10 high-signal traders
+            # Run on EVERY iteration (not just when new_addrs > 0)
+            # This ensures notification triggers when count reaches 10, 20, 30, etc.
+            if discord_bot:
+                current_count = len(state.master_profiles)
+                if (
+                    current_count > 0
+                    and current_count % 10 == 0
+                    and state.last_notified_count < current_count
+                ):
+                    state.last_notified_count = current_count
+                    print(
+                        f"\n📱 Discord: Sending update ({current_count} monitored)...",
+                        flush=True,
+                    )
+                    try:
+                        discord_bot.send_summary_table(
+                            list(state.master_profiles.values())
+                        )
+                    except Exception as e:
+                        print(f"\n❌ Discord error: {e}", flush=True)
 
     except asyncio.CancelledError:
         print("Discovery loop cancelled")
