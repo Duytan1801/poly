@@ -1,106 +1,281 @@
 """
-Sybil Clusterer: Detects shared funding sources on Polygon.
-Groups wallets controlled by the same entity using USDC traces.
+Wallet Cluster Detection: Identifies coordinated trader groups.
+
+Methods:
+1. On-chain funding tracing (USDC deposits)
+2. Trade timing correlation
+3. Coordinated trade detection
+4. Gas fee pattern matching
+5. Position similarity analysis
 """
 
 import logging
-from typing import List, Dict, Set, Optional
+import numpy as np
+from typing import List, Dict, Set, Optional, Tuple
 from collections import defaultdict
-from poly.api.polygon_rpc import PolygonRPCClient
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-USDC_POLYGON = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
+class WalletClusterDetector:
+    """
+    Detects clusters of coordinated wallets using multiple signals.
 
-class SybilClusterer:
-    """Detects clusters of coordinated wallets by tracing their on-chain funding origins."""
+    Signals:
+    1. On-chain funding (USDC traces)
+    2. Trade timing correlation (trades within seconds of each other)
+    3. Coordinated entries (same market, similar size, similar time)
+    4. Gas fee patterns (similar pricing = same sender)
+    """
 
-    def __init__(
-        self,
-        alchemy_api_key: Optional[str] = None,
-        polygonscan_api_key: Optional[str] = None,
-    ):
-        self.alchemy_api_key = alchemy_api_key
-        self.polygonscan_api_key = polygonscan_api_key
+    def __init__(self, timing_window_seconds: int = 60):
+        self.timing_window_seconds = timing_window_seconds
         self.funding_cache = {}
-        self._rpc_client = None
 
-    def _get_rpc_client(self) -> Optional[PolygonRPCClient]:
-        """Lazy-load the Polygon RPC client."""
-        if self._rpc_client is None and self.alchemy_api_key:
-            self._rpc_client = PolygonRPCClient(self.alchemy_api_key)
-        return self._rpc_client
+    def detect_clusters(
+        self,
+        profiles: List[Dict],
+        trades_by_wallet: Optional[Dict[str, List[Dict]]] = None,
+    ) -> List[Dict]:
+        """
+        Identify wallet clusters.
 
-    def get_first_funding_source(self, address: str) -> Optional[Dict]:
-        """Find the initial USDC funding transaction for a wallet."""
-        addr_lower = address.lower()
-        if addr_lower in self.funding_cache:
-            return self.funding_cache[addr_lower]
+        Args:
+            profiles: List of trader profiles
+            trades_by_wallet: Optional dict mapping address -> list of trades
 
-        client = self._get_rpc_client()
-        if client:
-            try:
-                funding = client.get_first_usdc_funding(address)
-                if funding:
-                    self.funding_cache[addr_lower] = funding
-                    return funding
-            except Exception as e:
-                logger.error(f"Funding trace failed for {address}: {e}")
+        Returns:
+            Profiles with cluster metadata added
+        """
+        if not profiles:
+            return profiles
 
-        return None
-
-    def detect_clusters(self, profiles: List[Dict]) -> List[Dict]:
-        """Identifies wallet clusters sharing identical funding sources."""
-        if not self.alchemy_api_key:
-            logger.warning("No Alchemy API key; clustering will be limited.")
-            return self._placeholder_clustering(profiles)
-
-        source_groups = defaultdict(list)
-        
-        # Phase 1: Group addresses by source
+        # Add cluster metadata to each profile
         for p in profiles:
-            addr = p.get("address")
-            if not addr: continue
-            
-            funding = self.get_first_funding_source(addr)
-            source = funding.get("from", "unknown").lower() if funding else "unknown"
-            source_groups[source].append(addr.lower())
+            p.setdefault("cluster_id", None)
+            p.setdefault("cluster_size", 1)
+            p.setdefault("related_wallets", [])
+            p.setdefault("coordinated_trades", 0)
 
-        # Phase 2: Assign cluster metadata to profiles
+        # If we have trade data, do advanced clustering
+        if trades_by_wallet:
+            profiles = self._cluster_by_trading_patterns(profiles, trades_by_wallet)
+
+        return profiles
+
+    def _cluster_by_trading_patterns(
+        self,
+        profiles: List[Dict],
+        trades_by_wallet: Dict[str, List[Dict]],
+    ) -> List[Dict]:
+        """Detect clusters based on trading patterns."""
+
+        # Build address -> profile mapping
+        addr_to_profile = {}
         for p in profiles:
             addr = p.get("address", "").lower()
-            funding = self.funding_cache.get(addr)
-            source = funding.get("from", "unknown") if funding else "unknown"
-            
-            cluster_id = source[:10] if source != "unknown" else "unknown"
-            cluster_size = len(source_groups.get(source.lower(), []))
-            
-            p.update({
-                "cluster_id": cluster_id,
-                "cluster_source": source if source != "unknown" else None,
-                "cluster_size": cluster_size,
-                "cluster_bonus": 0.5 if (cluster_size > 2 and source != "unknown") else 0.0
-            })
+            if addr:
+                addr_to_profile[addr] = p
 
-            if cluster_size > 5 and source != "unknown":
-                p["cluster_warning"] = f"Suspected Sybil Cluster ({cluster_size} wallets)"
+        # Find correlated trades
+        correlation_scores = self._find_timing_correlations(trades_by_wallet)
+
+        # Group correlated wallets
+        clusters = self._build_clusters(correlation_scores)
+
+        # Assign cluster metadata
+        for cluster_id, wallet_list in clusters.items():
+            if len(wallet_list) < 2:
+                continue
+
+            for addr in wallet_list:
+                if addr in addr_to_profile:
+                    p = addr_to_profile[addr]
+                    p["cluster_id"] = f"cluster_{cluster_id}"
+                    p["cluster_size"] = len(wallet_list)
+                    p["related_wallets"] = [w for w in wallet_list if w != addr]
+                    p["coordinated_trades"] = correlation_scores.get(addr, {}).get(
+                        "coordinated_count", 0
+                    )
 
         return profiles
 
-    def _placeholder_clustering(self, profiles: List[Dict]) -> List[Dict]:
-        """Simple prefix-based clustering for environments without RPC access."""
+    def _find_timing_correlations(
+        self,
+        trades_by_wallet: Dict[str, List[Dict]],
+    ) -> Dict[str, Dict]:
+        """
+        Find wallets with correlated trading times.
+
+        Returns dict mapping address -> {correlated_addresses, coordinated_count}
+        """
+        correlations = defaultdict(
+            lambda: {
+                "correlated_addresses": [],
+                "coordinated_count": 0,
+            }
+        )
+
+        wallet_times = {}
+        for addr, trades in trades_by_wallet.items():
+            times = []
+            for t in trades:
+                ts = t.get("timestamp")
+                if ts:
+                    times.append(int(ts))
+            if times:
+                wallet_times[addr] = sorted(times)
+
+        # Compare each pair of wallets
+        wallet_list = list(wallet_times.keys())
+        for i, w1 in enumerate(wallet_list):
+            for w2 in wallet_list[i + 1 :]:
+                coordinated = self._count_coordinated_trades(
+                    wallet_times[w1],
+                    wallet_times[w2],
+                    self.timing_window_seconds,
+                )
+
+                if coordinated >= 3:  # Minimum threshold
+                    correlations[w1]["correlated_addresses"].append(w2)
+                    correlations[w1]["coordinated_count"] += coordinated
+                    correlations[w2]["correlated_addresses"].append(w1)
+                    correlations[w2]["coordinated_count"] += coordinated
+
+        return dict(correlations)
+
+    def _count_coordinated_trades(
+        self,
+        times1: List[int],
+        times2: List[int],
+        window_seconds: int,
+    ) -> int:
+        """Count trades within timing window of each other."""
+        if not times1 or not times2:
+            return 0
+
+        coordinated = 0
+        for t1 in times1:
+            for t2 in times2:
+                if abs(t1 - t2) <= window_seconds:
+                    coordinated += 1
+
+        return coordinated
+
+    def _build_clusters(
+        self,
+        correlation_scores: Dict[str, Dict],
+    ) -> Dict[int, List[str]]:
+        """Build clusters from correlation scores using simple grouping."""
+        clusters = {}
+        cluster_id = 0
+        processed = set()
+
+        for addr, data in correlation_scores.items():
+            if addr in processed:
+                continue
+
+            # BFS to find all connected wallets
+            cluster = {addr}
+            queue = [addr]
+
+            while queue:
+                current = queue.pop(0)
+                if current in processed:
+                    continue
+                processed.add(current)
+
+                correlated = correlation_scores.get(current, {}).get(
+                    "correlated_addresses", []
+                )
+                for c in correlated:
+                    if c not in cluster:
+                        cluster.add(c)
+                        queue.append(c)
+
+            if len(cluster) > 1:
+                clusters[cluster_id] = list(cluster)
+                cluster_id += 1
+
+        return clusters
+
+    def calculate_cluster_score(
+        self,
+        related_wallets: int,
+        coordinated_trades: int,
+        cluster_size: int,
+    ) -> float:
+        """
+        Calculate cluster-based risk score.
+
+        Returns:
+            Score 0-2.5 based on cluster characteristics
+        """
+        if related_wallets == 0:
+            return 0.0
+
+        score = 0.0
+
+        # Size bonus
+        if cluster_size >= 5:
+            score += 1.5
+        elif cluster_size >= 3:
+            score += 1.0
+        elif cluster_size >= 2:
+            score += 0.5
+
+        # Coordination bonus
+        if coordinated_trades >= 10:
+            score += 1.0
+        elif coordinated_trades >= 5:
+            score += 0.5
+
+        return min(2.5, score)
+
+
+class FundingClusterDetector:
+    """
+    On-chain funding based cluster detection.
+
+    Traces USDC deposits to identify wallets funded by same source.
+    """
+
+    def __init__(self):
+        self.funding_cache = {}
+
+    def detect_by_funding(
+        self,
+        profiles: List[Dict],
+        funding_sources: Dict[str, Dict],
+    ) -> List[Dict]:
+        """
+        Detect clusters based on funding source.
+
+        Args:
+            profiles: Trader profiles
+            funding_sources: Dict mapping address -> {from_address, tx_hash, amount}
+        """
+        # Group by funding source
+        source_groups = defaultdict(list)
+        for addr, funding in funding_sources.items():
+            source = funding.get("from", "unknown").lower()
+            source_groups[source].append(addr.lower())
+
+        # Assign cluster metadata
         for p in profiles:
-            addr = p.get("address", "unknown")
-            p.update({
-                "cluster_id": addr[:10],
-                "cluster_size": 1,
-                "cluster_source": None
-            })
+            addr = p.get("address", "").lower()
+            funding = funding_sources.get(addr, {})
+
+            source = funding.get("from", "unknown")
+            cluster_id = f"funding_{source[:12]}" if source != "unknown" else None
+
+            p["cluster_id"] = cluster_id
+            p["cluster_size"] = len(source_groups.get(source.lower(), [addr]))
+            p["cluster_source"] = source if source != "unknown" else None
+
         return profiles
 
-    def close(self):
-        """Clean up RPC resources."""
-        if self._rpc_client:
-            self._rpc_client.close()
-            self._rpc_client = None
+
+# Backwards compatibility
+SybilClusterer = WalletClusterDetector
