@@ -49,3 +49,4 @@ Thumbs.db
 
 # Lock files
 uv.lock
+.env

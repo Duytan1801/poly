@@ -12,15 +12,30 @@ logger = logging.getLogger(__name__)
 class DiscordBotClient:
     """Uses the Poly Bot token to send formatted embeds to specific channels."""
 
-    def __init__(self):
+    def __init__(self, optional: bool = False):
         import os
 
+        # Try to load from .env file if not in environment
         self.token = os.environ.get("DISCORD_BOT_TOKEN")
         if not self.token:
-            raise ValueError("DISCORD_BOT_TOKEN environment variable not set")
+            # Try loading from .env file
+            try:
+                from dotenv import load_dotenv
+
+                load_dotenv()
+                self.token = os.environ.get("DISCORD_BOT_TOKEN")
+            except ImportError:
+                pass
+
+        if not self.token:
+            if not optional:
+                raise ValueError(
+                    "DISCORD_BOT_TOKEN not found. Set it in .env file or environment variable"
+                )
+            self.token = None
         self.base_url = "https://discord.com/api/v10"
         self.headers = {
-            "Authorization": f"Bot {self.token}",
+            "Authorization": f"Bot {self.token}" if self.token else None,
             "Content-Type": "application/json",
         }
         self.client = httpx.Client(timeout=10.0)
