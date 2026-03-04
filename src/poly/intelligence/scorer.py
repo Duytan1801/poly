@@ -1,32 +1,29 @@
 """
-Insider Scoring System v4.0 - Perpetual ML Integration
+Insider Scoring System v4.0 - Pure Rule-Based
 Based on iykykmarkets research + PolyTrack + polymarket-insider-tracker methodologies.
 
-Key improvements from v3.0:
-1. Fresh Wallet Detection - Flag new wallets making large trades
-2. Position Sizing Analysis - % of capital in single bet
-3. Early Entry Scoring - Reward first-movers (within 6hrs of market creation)
-4. Off-Hours Activity - Night/weekend trading detection
-5. Volume Impact Analysis - Trade size vs daily market volume
-6. Cluster Detection - Coordinated wallet groups
-7. Perpetual ML - Replace weighted sum with ML model
+Features (14 components):
+1. Winrate Score - Strict >50% requirement
+2. PnL Score - Log-scaled profit
+3. Timing Score - Late trading detection
+4. Cross-Market Score - Multi-market consistency
+5. Camouflage Score - High profit + mediocre winrate
+6. Category Score - Market type insider probability
+7. Freshness Score - Account age analysis
+8. Activity Penalty - Too many trades = noise
+9. Fresh Wallet Score - New wallets making large trades
+10. Position Sizing - % capital in single bet
+11. Early Entry - First-mover advantage
+12. Off-Hours Activity - Night/weekend trading
+13. Volume Impact - Trade size vs market
+14. Cluster Score - Coordinated wallets
 """
 
 import math
 import logging
 import time
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any
 from collections import defaultdict
-
-import numpy as np
-
-try:
-    import perpetual
-    from perpetual import PerpetualClassifier
-
-    PERPETUAL_AVAILABLE = True
-except ImportError:
-    PERPETUAL_AVAILABLE = False
 
 from poly.intelligence.utils import categorize_market
 
@@ -34,30 +31,6 @@ logger = logging.getLogger(__name__)
 
 MIN_LIQUIDITY_VOLUME = 50000
 MIN_LIQUIDITY_PARTICIPANTS = 20
-
-# Feature extraction for ML model
-FEATURE_NAMES = [
-    "winrate",
-    "total_trades",
-    "pnl",
-    "unique_markets",
-    "value_weighted_accuracy",
-    "fresh_wallet_score",
-    "position_sizing_score",
-    "early_entry_score",
-    "off_hours_score",
-    "volume_impact_score",
-    "cluster_score",
-    "late_trading_ratio",
-    "pre_resolution_ratio",
-    "avg_hours_before_resolution",
-    "account_age_days",
-    "days_since_last_trade",
-    "avg_trade_size",
-    "max_trade_size",
-    "pnl_per_trade",
-    "winrate_vs_category_avg",
-]
 
 
 def calculate_value_weighted_accuracy(
@@ -221,7 +194,6 @@ def calculate_freshness_score(first_trade_ts: int, last_trade_ts: int) -> float:
 
     current_ts = int(time.time())
     account_age_days = (current_ts - first_trade_ts) / 86400
-    days_since_last = (current_ts - last_trade_ts) / 86400
 
     if account_age_days < 30:
         return 1.5
@@ -233,7 +205,7 @@ def calculate_freshness_score(first_trade_ts: int, last_trade_ts: int) -> float:
 
 
 # ============================================================================
-# NEW FEATURES FROM RESEARCH
+# NEW FEATURES FROM RESEARCH (v4.0)
 # ============================================================================
 
 
@@ -338,7 +310,6 @@ def calculate_off_hours_score(trade_timestamps: List[int]) -> float:
         from datetime import datetime
 
         dt = datetime.fromtimestamp(ts)
-        # Off-hours: 10PM - 6AM (weekday) or any time weekend
         hour = dt.hour
         is_weekend = dt.weekday() >= 5
 
@@ -406,231 +377,39 @@ def calculate_cluster_score(related_wallets: int, coordinated_trades: int) -> fl
 
 
 # ============================================================================
-# ML FEATURE EXTRACTION
+# MAIN SCORER CLASS
 # ============================================================================
 
 
-def extract_ml_features(profile: Dict) -> np.ndarray:
-    """Extract features for ML model from trader profile."""
-    features = []
-
-    # Basic metrics
-    winrate = profile.get("winrate", 0)
-    features.append(winrate)
-
-    trades = profile.get("total_trades_actual", profile.get("total_trades", 0))
-    features.append(trades)
-
-    pnl = profile.get("pnl", 0)
-    features.append(pnl)
-
-    # Multi-market
-    mm = profile.get("multi_market", {})
-    unique_markets = mm.get("unique_markets", 0)
-    features.append(unique_markets)
-
-    # Value-weighted accuracy
-    vwa = profile.get("value_weighted_accuracy", winrate)
-    features.append(vwa)
-
-    # New features
-    avg_trade_size = profile.get("avg_trade_size", 0)
-    max_trade_size = profile.get("max_trade_size", 0)
-    total_volume = profile.get("total_volume", 0)
-
-    first_ts = profile.get("first_trade_timestamp", 0)
-    last_ts = profile.get("last_trade_timestamp", 0)
-
-    features.append(calculate_fresh_wallet_score(trades, avg_trade_size, first_ts))
-    features.append(
-        calculate_position_sizing_score(max_trade_size, avg_trade_size, total_volume)
-    )
-    features.append(0.0)  # Early entry - needs market creation time
-    features.append(0.0)  # Off-hours - needs raw timestamps
-    features.append(0.0)  # Volume impact - needs market data
-    features.append(0.0)  # Cluster score - needs cluster analysis
-
-    # Timing features
-    t = profile.get("timing", {})
-    features.append(t.get("last_minute_ratio", 0))
-    features.append(t.get("pre_resolution_ratio", 0))
-    features.append(t.get("avg_hours_before_resolution", 0))
-
-    # Account age
-    current_ts = int(time.time())
-    account_age_days = (current_ts - first_ts) / 86400 if first_ts else 0
-    days_since = (current_ts - last_ts) / 86400 if last_ts else 0
-    features.append(account_age_days)
-    features.append(days_since)
-
-    # Size features
-    features.append(avg_trade_size)
-    features.append(max_trade_size)
-
-    # Efficiency
-    pnl_per_trade = pnl / trades if trades > 0 else 0
-    features.append(pnl_per_trade)
-
-    # Winrate vs category (placeholder)
-    features.append(0.0)
-
-    return np.array(features, dtype=np.float64)
-
-
-# ============================================================================
-# PERPETUAL ML SCORER
-# ============================================================================
-
-
-class PerpetualInsiderScorer:
+class InsiderScorer:
     """
-    ML-based insider detection using Perpetual gradient boosting.
+    Rule-based Insider Scoring System v4.0.
 
-    Automatically generalizes - no manual hyperparameter tuning needed.
-    """
-
-    def __init__(self, budget: float = 0.5):
-        self.budget = budget
-        self.model: Optional[PerpetualClassifier] = None
-        self.is_fitted = False
-        self.feature_names = FEATURE_NAMES
-
-    def _create_model(self) -> PerpetualClassifier:
-        """Create a new Perpetual classifier."""
-        if not PERPETUAL_AVAILABLE:
-            raise RuntimeError(
-                "Perpetual library not installed. Run: uv pip install perpetual"
-            )
-
-        return PerpetualClassifier(
-            objective="LogLoss",
-            budget=self.budget,
-            num_threads=4,
-            feature_importance_method="Gain",
-        )
-
-    def fit(self, profiles: List[Dict], labels: np.ndarray) -> "PerpetualInsiderScorer":
-        """
-        Train the model on trader profiles.
-
-        Args:
-            profiles: List of trader profile dictionaries
-            labels: Binary labels (1 = insider, 0 = not insider)
-        """
-        logger.info(f"Training Perpetual model on {len(profiles)} samples...")
-
-        # Extract features
-        X = np.array([extract_ml_features(p) for p in profiles])
-
-        # Handle NaN/Inf
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # Create and train model
-        self.model = self._create_model()
-        self.model.fit(X, labels)
-
-        self.is_fitted = True
-        logger.info("Training complete!")
-
-        # Log feature importance
-        importance = self.model.feature_importances_
-        logger.info("Feature importances:")
-        for i, (name, imp) in enumerate(
-            sorted(zip(self.feature_names, importance), key=lambda x: -x[1])
-        ):
-            logger.info(f"  {name}: {imp:.4f}")
-
-        return self
-
-    def predict_proba(self, profiles: List[Dict]) -> np.ndarray:
-        """
-        Predict insider probability for traders.
-
-        Returns:
-            Array of probabilities [0, 1] for each trader
-        """
-        if not self.is_fitted:
-            raise RuntimeError("Model not trained. Call fit() first.")
-
-        X = np.array([extract_ml_features(p) for p in profiles])
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # Get probability of class 1 (insider)
-        proba = self.model.predict_proba(X)
-        return proba[:, 1] if proba.ndim > 1 else proba
-
-    def predict(self, profiles: List[Dict], threshold: float = 0.5) -> np.ndarray:
-        """Predict insider labels (binary)."""
-        proba = self.predict_proba(profiles)
-        return (proba >= threshold).astype(int)
-
-    def calibrate(self, X_cal: np.ndarray, y_cal: np.ndarray, alpha: float = 0.1):
-        """Calibrate model for better probability estimates."""
-        if not self.is_fitted:
-            raise RuntimeError("Model not trained.")
-
-        self.model.calibrate(X_cal, y_cal, alpha)
-        logger.info("Model calibrated!")
-
-    def calculate_drift(self, X_new: np.ndarray) -> float:
-        """Calculate concept drift for new data."""
-        if not self.is_fitted:
-            raise RuntimeError("Model not trained.")
-
-        return self.model.calculate_drift(X_new, drift_type="concept")
-
-    def save(self, path: str):
-        """Save model to file."""
-        if not self.is_fitted:
-            raise RuntimeError("Model not trained.")
-
-        self.model.save_model(path)
-        logger.info(f"Model saved to {path}")
-
-    def load(self, path: str):
-        """Load model from file."""
-        self.model = self._create_model()
-        self.model.load_model(path)
-        self.is_fitted = True
-        logger.info(f"Model loaded from {path}")
-
-
-# ============================================================================
-# RULE-BASED FALLBACK (when ML not available)
-# ============================================================================
-
-
-class InsiderScorerV4:
-    """
-    Hybrid scorer - uses ML when available, falls back to rule-based.
-
-    Level thresholds (ML-based 0-1 score scaled to 0-10):
+    Level thresholds (score 0-10):
     - CRITICAL: >= 8.0
     - HIGH: >= 5.0
     - MEDIUM: >= 2.0
     - LOW: < 2.0
+
+    Components (14 total):
+    1. winrate_score (max 4.0)
+    2. pnl_score (max 4.0)
+    3. timing_score (max 2.5)
+    4. cross_market_score (max 3.0)
+    5. camouflage_score (max 3.0)
+    6. category_score (max 1.5)
+    7. freshness_score (max 1.5)
+    8. activity_penalty (min -2.0)
+    9. fresh_wallet_score (max 2.5)
+    10. position_sizing_score (max 2.0)
+    11. early_entry_score (max 2.0)
+    12. off_hours_score (max 1.5)
+    13. volume_impact_score (max 2.0)
+    14. cluster_score (max 2.5)
     """
 
-    def __init__(
-        self,
-        use_ml: bool = True,
-        ml_model_path: Optional[str] = None,
-        budget: float = 0.5,
-    ):
-        self.use_ml = use_ml and PERPETUAL_AVAILABLE
-        self.budget = budget
-        self.ml_scorer: Optional[PerpetualInsiderScorer] = None
-        self.ml_model_path = ml_model_path
-
-        if self.use_ml:
-            try:
-                self.ml_scorer = PerpetualInsiderScorer(budget=budget)
-                if ml_model_path:
-                    self.ml_scorer.load(ml_model_path)
-                    logger.info(f"Loaded ML model from {ml_model_path}")
-            except Exception as e:
-                logger.warning(f"Failed to initialize ML model: {e}. Using rule-based.")
-                self.use_ml = False
+    def __init__(self):
+        pass
 
     def calculate_level(self, score: float) -> str:
         """Categorize risk based on score."""
@@ -647,36 +426,6 @@ class InsiderScorerV4:
         if not profiles:
             return []
 
-        # Use ML if available and trained
-        if self.use_ml and self.ml_scorer and self.ml_scorer.is_fitted:
-            return self._score_with_ml(profiles)
-        else:
-            return self._score_with_rules(profiles)
-
-    def _score_with_ml(self, profiles: List[Dict]) -> List[Dict]:
-        """Score using ML model."""
-        proba = self.ml_scorer.predict_proba(profiles)
-
-        results = []
-        for i, p in enumerate(profiles):
-            ml_score = proba[i]
-            # Scale 0-1 to 0-10
-            total_score = ml_score * 10.0
-
-            results.append(
-                {
-                    **p,
-                    "risk_score": round(total_score, 2),
-                    "ml_probability": round(ml_score, 4),
-                    "level": self.calculate_level(total_score),
-                    "scoring_method": "ml",
-                }
-            )
-
-        return results
-
-    def _score_with_rules(self, profiles: List[Dict]) -> List[Dict]:
-        """Score using rule-based system (fallback)."""
         results = []
         for p in profiles:
             winrate = p.get("winrate", 0)
@@ -687,54 +436,77 @@ class InsiderScorerV4:
             mm = p.get("multi_market", {})
             market_info = p.get("market_info", {})
 
-            # Original components
+            # ==================== CORE COMPONENTS ====================
+
+            # 1. Winrate Score (CRITICAL - must be >50%)
             winrate_score = calculate_winrate_score(winrate, trades)
+
+            # 2. PnL Score
             pnl_score = calculate_pnl_score(pnl)
 
+            # 3. Timing Score
             late_ratio = t.get("last_minute_ratio", 0)
             pre_res_ratio = t.get("pre_resolution_ratio", 0)
             avg_hours = t.get("avg_hours_before_resolution", 0)
             timing_score = calculate_timing_score(late_ratio, pre_res_ratio, avg_hours)
 
+            # 4. Cross-Market Score
             unique_markets = mm.get("unique_markets", 0)
             max_share = w.get("max_market_share", 0.0)
             cross_market_score = calculate_concentration_score(
                 unique_markets, trades, max_share
             )
 
+            # 5. Camouflage Score
             camouflage_score = calculate_camouflage_score(pnl, winrate, trades)
 
+            # 6. Category Score
             category_score = calculate_market_category_bonus(
                 market_info.get("question", ""),
                 market_info.get("group_item_title", ""),
                 market_info.get("category", ""),
             )
 
+            # 7. Freshness Score
             first_ts = p.get("first_trade_timestamp", 0)
             last_ts = p.get("last_trade_timestamp", 0)
             freshness_score = calculate_freshness_score(first_ts, last_ts)
 
+            # 8. Activity Penalty
             activity_penalty = calculate_activity_penalty(trades)
 
-            # New features
-            avg_trade_size = p.get("avg_trade_size", 0)
-            max_trade_size = p.get("max_trade_size", 0)
-            total_volume = p.get("total_volume", 0)
+            # ==================== NEW FEATURES (v4.0) ====================
 
+            # 9. Fresh Wallet Score
+            avg_trade_size = p.get("avg_trade_size", 0)
             fresh_wallet_score = calculate_fresh_wallet_score(
                 trades, avg_trade_size, first_ts
+            )
+
+            # 10. Position Sizing Score
+            max_trade_size = p.get("max_trade_size", 0)
+            total_volume = p.get(
+                "total_volume", max_trade_size * trades if trades > 0 else 0
             )
             position_sizing_score = calculate_position_sizing_score(
                 max_trade_size, avg_trade_size, total_volume
             )
 
-            # New features (placeholders - would need more data)
+            # 11. Early Entry Score (placeholder - needs market creation time)
             early_entry_score = 0.0
-            off_hours_score = 0.0
-            volume_impact_score = 0.0
-            cluster_score = 0.0
 
-            # Total score
+            # 12. Off-Hours Score (placeholder - needs raw timestamps)
+            off_hours_score = 0.0
+
+            # 13. Volume Impact Score (placeholder - needs market daily volume)
+            volume_impact_score = 0.0
+
+            # 14. Cluster Score
+            related_wallets = len(p.get("related_wallets", []))
+            coordinated_trades = p.get("coordinated_trades", 0)
+            cluster_score = calculate_cluster_score(related_wallets, coordinated_trades)
+
+            # ==================== FINAL SCORE ====================
             total_score = min(
                 (
                     winrate_score
@@ -755,7 +527,7 @@ class InsiderScorerV4:
                 10.0,
             )
 
-            # Profile type
+            # Determine profile type
             if winrate < 0.50:
                 profile_type = "LOSER"
             elif camouflage_score >= 2.0:
@@ -789,20 +561,10 @@ class InsiderScorerV4:
                         "volume_impact": round(volume_impact_score, 2),
                         "cluster": round(cluster_score, 2),
                     },
-                    "scoring_method": "rules",
+                    "value_weighted_accuracy": p.get(
+                        "value_weighted_accuracy", winrate
+                    ),
                 }
             )
 
         return results
-
-
-# ============================================================================
-# BACKWARDS COMPATIBILITY
-# ============================================================================
-
-
-class InsiderScorer(InsiderScorerV4):
-    """Backwards compatible alias."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
