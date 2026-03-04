@@ -197,7 +197,7 @@ class DiscordBotClient:
                 pnl = p.get("pnl", 0)
                 score = p.get("risk_score", 0)
                 level = p.get("level", "LOW")
-                trades = p.get("total_trades_actual", 0)
+                trades = p.get("total_trades", 0)
 
                 level_emoji = (
                     "🔴" if level == "CRITICAL" else ("🟠" if level == "HIGH" else "🟡")

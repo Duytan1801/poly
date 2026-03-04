@@ -14,7 +14,7 @@ from poly.intelligence.scorer import InsiderScorer
 from poly.intelligence.clustering import SybilClusterer
 from poly.discord.bot import DiscordBotClient
 from poly.api.graphql import GraphQLClient
-from poly.monitoring import RealTimeTradeMonitor, PositionMonitor
+from poly.monitoring import RealTimeTradeMonitor, PositionMonitor, MarketVolumeMonitor
 
 logging.getLogger("httpx").setLevel(logging.CRITICAL)
 logging.getLogger("poly").setLevel(logging.CRITICAL)
@@ -31,11 +31,12 @@ class OptimizedEngineState:
         self.processed_event_ids = set()
         self.total_scanned = 0
         self.total_trades_fetched = 0
+        self.critical_count = 0
         self.start_time = time.time()
         self.last_discord_update = 0
         self.last_notified_count = 0
         self.next_notification_threshold = (
-            10  # Notify when count >= 10, then advance to 20, 30, etc.
+            10  # Notify when CRITICAL count >= 10, then advance to 20, 30, etc.
         )
 
 
@@ -204,6 +205,7 @@ async def run_optimized_event_engine(args):
         # Initialize monitors if Discord is available
         trade_monitor = None
         position_monitor = None
+        market_volume_monitor = None
 
         if discord_bot:
             trade_monitor = RealTimeTradeMonitor(
@@ -211,6 +213,12 @@ async def run_optimized_event_engine(args):
             )
             position_monitor = PositionMonitor(
                 discord_bot, state, poll_interval=args.position_poll_interval
+            )
+            market_volume_monitor = MarketVolumeMonitor(
+                discord_bot,
+                state,
+                poll_interval=args.market_monitor_interval,
+                market_refresh_interval=args.market_refresh_interval,
             )
 
         print("\n🚀 OPTIMIZED EVENT-DRIVEN INTELLIGENCE HUB ONLINE")
@@ -221,6 +229,8 @@ async def run_optimized_event_engine(args):
             print(f"Real-time trade monitoring: {args.trade_poll_interval}s")
         if position_monitor:
             print(f"Position monitoring: {args.position_poll_interval}s")
+        if market_volume_monitor:
+            print(f"Market volume monitoring: {args.market_monitor_interval}s")
         print("=" * 80)
 
         # Create asyncio tasks for concurrent monitoring
@@ -238,6 +248,12 @@ async def run_optimized_event_engine(args):
                 position_monitor.monitor_continuously(), name="position_monitor"
             )
             tasks.append(position_monitor_task)
+
+        if market_volume_monitor:
+            market_volume_task = asyncio.create_task(
+                market_volume_monitor.monitor_continuously(), name="market_volume"
+            )
+            tasks.append(market_volume_task)
 
         # Create discovery loop task
         discovery_task = asyncio.create_task(
@@ -318,10 +334,11 @@ async def discovery_loop(
                     state.total_scanned += 1
                     level = profile.get("level", "NONE")
 
-                    # Add HIGH/CRITICAL to monitoring
-                    if level in ["HIGH", "CRITICAL"]:
+                    # Add CRITICAL to monitoring
+                    if level == "CRITICAL":
                         addr = profile["address"].lower()
                         state.master_profiles[addr] = profile
+                        state.critical_count += 1
 
                         # Log detection
                         score = profile.get("risk_score", profile.get("total_score", 0))
@@ -336,7 +353,7 @@ async def discovery_loop(
             # 5. Status update
             elapsed = time.time() - state.start_time
             print(
-                f"\n📡 Monitoring {len(state.master_profiles)} High-Signal Traders | "
+                f"\n📡 Monitoring {state.critical_count} CRITICAL Traders | "
                 f"Total Trades: {state.total_trades_fetched:,} | "
                 f"Elapsed: {elapsed:.0f}s"
             )
@@ -344,11 +361,11 @@ async def discovery_loop(
             # Sleep to prevent CPU spinning
             await asyncio.sleep(2)
 
-            # 6. Discord notification when count passes multiples of 10
+            # 6. Discord notification when CRITICAL count passes multiples of 10
             # Run on EVERY iteration (not just when new_addrs > 0)
             # This ensures notification triggers when count >= 10, >= 20, >= 30, etc.
             if discord_bot:
-                current_count = len(state.master_profiles)
+                current_count = state.critical_count
 
                 # Notify if count has passed the next threshold (10, 20, 30, 40...)
                 should_notify = (
@@ -358,7 +375,7 @@ async def discovery_loop(
                 )
 
                 print(
-                    f"   Discord check: count={current_count}, threshold={state.next_notification_threshold}, last_notified={state.last_notified_count}, should_notify={should_notify}"
+                    f"   Discord check: CRITICAL={current_count}, threshold={state.next_notification_threshold}, last_notified={state.last_notified_count}, should_notify={should_notify}"
                 )
 
                 if should_notify:
@@ -368,7 +385,7 @@ async def discovery_loop(
                     state.next_notification_threshold = ((current_count // 10) + 1) * 10
 
                     print(
-                        f"\n📱 Discord: Sending update ({current_count} monitored)...",
+                        f"\n📱 Discord: Sending update ({current_count} CRITICAL monitored)...",
                         flush=True,
                     )
                     try:
@@ -419,6 +436,18 @@ def main():
         type=int,
         default=300,
         help="Seconds between position polls (default: 300 = 5 minutes)",
+    )
+    parser.add_argument(
+        "--market-monitor-interval",
+        type=int,
+        default=60,
+        help="Seconds between market volume checks (default: 60)",
+    )
+    parser.add_argument(
+        "--market-refresh-interval",
+        type=int,
+        default=300,
+        help="Seconds between refreshing top markets list (default: 300 = 5 minutes)",
     )
     args = parser.parse_args()
 

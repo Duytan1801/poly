@@ -5,6 +5,7 @@ Monitors current positions and sends notifications when PnL changes significantl
 
 import asyncio
 import logging
+import time
 from typing import List, Dict
 from collections import defaultdict
 
@@ -14,7 +15,12 @@ logger = logging.getLogger(__name__)
 class PositionMonitor:
     """Monitor position holdings and PnL changes for HIGH/CRITICAL traders."""
 
-    def __init__(self, discord_bot, state, poll_interval: int = 300):
+    def __init__(
+        self,
+        discord_bot,
+        state,
+        poll_interval: int = 300,
+    ):
         """
         Args:
             discord_bot: DiscordBotClient instance
@@ -46,7 +52,7 @@ class PositionMonitor:
                 monitored_wallets = [
                     addr
                     for addr, profile in self.state.master_profiles.items()
-                    if profile.get("level") in ["HIGH", "CRITICAL"]
+                    if profile.get("level") == "CRITICAL"
                 ]
 
                 if not monitored_wallets:

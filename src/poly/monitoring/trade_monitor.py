@@ -196,7 +196,7 @@ class RealTimeTradeMonitor:
 
                 # Calculate total size and direction
                 total_size = 0
-                total_side = None
+                total_side = "UNKNOWN"
                 price = 0
 
                 for trade in market_trades:
@@ -214,7 +214,7 @@ class RealTimeTradeMonitor:
                     profile,
                     first_trade,
                     total_size,
-                    total_side,
+                    str(total_side) if total_side else "UNKNOWN",
                     price,
                     len(market_trades),
                 )
@@ -253,6 +253,9 @@ class RealTimeTradeMonitor:
             # Calculate value
             value = total_size * price
 
+            # Fetch current top 3 holdings for context
+            current_holdings = await self._fetch_current_holdings(addr)
+
             # Create embed
             color = 0x00FF00  # Green for live trades
 
@@ -263,26 +266,48 @@ class RealTimeTradeMonitor:
                 else "1 trade"
             )
 
+            fields = [
+                {"name": "Market", "value": title, "inline": False},
+                {
+                    "name": "Action",
+                    "value": f"**{side.upper()}** {outcome}",
+                    "inline": True,
+                },
+                {"name": "Size", "value": f"**${value:,.0f}**", "inline": True},
+                {"name": "Price", "value": f"**{price:.2f}**", "inline": True},
+                {
+                    "name": "Trader Stats",
+                    "value": f"WR: {winrate:.1%} | Score: {score:.1f}/10",
+                    "inline": False,
+                },
+            ]
+
+            # Add top 3 holdings
+            if current_holdings:
+                top_3 = current_holdings[:3]
+                holdings_text = ""
+                for i, h in enumerate(top_3, 1):
+                    h_pnl = float(h.get("totalPnl", 0))
+                    h_value = float(h.get("currentValue", 0))
+                    h_title = h.get("title", "Unknown")[:40]
+                    h_outcome = h.get("outcome", "?")
+                    pnl_emoji = "🟢" if h_pnl > 0 else ("🔴" if h_pnl < 0 else "⚪")
+                    holdings_text += f"{i}. {h_title}\n   {pnl_emoji}${h_pnl:+,.0f} | ${h_value:,.0f} | {h_outcome}\n"
+
+                fields.append(
+                    {
+                        "name": f"📊 Top {len(current_holdings)} Holdings",
+                        "value": holdings_text,
+                        "inline": False,
+                    }
+                )
+
             embed = {
                 "title": f"🎯 LIVE TRADE: {level} Risk Trader",
                 "description": f"**Elite Trader** executed a new position.",
                 "url": f"https://polymarket.com/event/{slug}" if slug else None,
                 "color": color,
-                "fields": [
-                    {"name": "Market", "value": title, "inline": False},
-                    {
-                        "name": "Action",
-                        "value": f"**{side.upper()}** {outcome}",
-                        "inline": True,
-                    },
-                    {"name": "Size", "value": f"**${value:,.0f}**", "inline": True},
-                    {"name": "Price", "value": f"**{price:.2f}**", "inline": True},
-                    {
-                        "name": "Trader Stats",
-                        "value": f"WR: {winrate:.1%} | Score: {score:.1f}/10",
-                        "inline": False,
-                    },
-                ],
+                "fields": fields,
                 "footer": {"text": f"🛰️ Poly Intel | {trade_text}"},
             }
 
@@ -302,3 +327,36 @@ class RealTimeTradeMonitor:
 
         except Exception as e:
             logger.error(f"Failed to send trade notification: {e}")
+
+    async def _fetch_current_holdings(self, wallet: str) -> List[Dict]:
+        """Fetch current holdings for a wallet, sorted by value."""
+        from poly.api.async_client import AsyncPolymarketClient
+
+        try:
+            async with AsyncPolymarketClient() as client:
+                params = {
+                    "user": wallet,
+                    "sortBy": "TOTALPNL",
+                    "sortDirection": "DESC",
+                    "limit": 10,
+                }
+
+                positions_data = await client._safe_get(
+                    f"{client.data_base}/positions", params=params
+                )
+
+                if not positions_data:
+                    return []
+
+                positions = positions_data if isinstance(positions_data, list) else []
+
+                # Sort by current value (descending)
+                positions.sort(
+                    key=lambda x: float(x.get("currentValue", 0)), reverse=True
+                )
+
+                return positions[:10]
+
+        except Exception as e:
+            logger.error(f"Error fetching holdings for {wallet[:10]}: {e}")
+            return []
