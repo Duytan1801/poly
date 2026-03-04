@@ -346,11 +346,22 @@ async def discovery_loop(
             # This ensures notification triggers when count reaches 10, 20, 30, etc.
             if discord_bot:
                 current_count = len(state.master_profiles)
-                if (
-                    current_count > 0
-                    and current_count % 10 == 0
-                    and state.last_notified_count < current_count
-                ):
+
+                # DEBUG: Log notification check details
+                condition_1 = current_count > 0
+                condition_2 = current_count % 10 == 0
+                condition_3 = state.last_notified_count < current_count
+                should_notify = condition_1 and condition_2 and condition_3
+
+                print(f"   Discord check: count={current_count}")
+                print(f"      condition_1 (>0): {condition_1}")
+                print(f"      condition_2 (%10==0): {condition_2}")
+                print(
+                    f"      condition_3 (last_notified < count): {condition_3} (last_notified={state.last_notified_count})"
+                )
+                print(f"      should_notify: {should_notify}")
+
+                if should_notify:
                     state.last_notified_count = current_count
                     print(
                         f"\n📱 Discord: Sending update ({current_count} monitored)...",
@@ -360,6 +371,7 @@ async def discovery_loop(
                         discord_bot.send_summary_table(
                             list(state.master_profiles.values())
                         )
+                        print(f"   ✅ Discord notification sent successfully")
                     except Exception as e:
                         print(f"\n❌ Discord error: {e}", flush=True)
 
