@@ -14,6 +14,7 @@ from poly.intelligence.scorer import InsiderScorer
 from poly.intelligence.clustering import SybilClusterer
 from poly.discord.bot import DiscordBotClient
 from poly.api.graphql import GraphQLClient
+from poly.monitoring import RealTimeTradeMonitor, PositionMonitor
 
 logging.getLogger("httpx").setLevel(logging.CRITICAL)
 logging.getLogger("poly").setLevel(logging.CRITICAL)
@@ -182,7 +183,7 @@ async def discover_traders_from_events(
 
 
 async def run_optimized_event_engine(args):
-    """Main execution loop with batch optimizations."""
+    """Main execution loop with batch optimizations and real-time monitoring."""
     async with AsyncPolymarketClient() as async_client:
         graphql_client = GraphQLClient()
         analyzer = ComprehensiveAnalyzer()
@@ -197,111 +198,172 @@ async def run_optimized_event_engine(args):
             print("   Running in analysis-only mode...\n")
             discord_bot = None
 
+        # Initialize monitors if Discord is available
+        trade_monitor = None
+        position_monitor = None
+
+        if discord_bot:
+            trade_monitor = RealTimeTradeMonitor(
+                discord_bot, state, poll_interval=args.trade_poll_interval
+            )
+            position_monitor = PositionMonitor(
+                discord_bot, state, poll_interval=args.position_poll_interval
+            )
+
         print("\n🚀 OPTIMIZED EVENT-DRIVEN INTELLIGENCE HUB ONLINE")
-        print("=" * 60)
+        print("=" * 80)
         print(f"Batch size: {args.wallets_per_iteration}")
         print(f"Max trades per wallet: {args.max_trades}")
-        print("=" * 60)
+        if trade_monitor:
+            print(f"Real-time trade monitoring: {args.trade_poll_interval}s")
+        if position_monitor:
+            print(f"Position monitoring: {args.position_poll_interval}s")
+        print("=" * 80)
 
+        # Create asyncio tasks for concurrent monitoring
+        tasks = []
+
+        # Create monitor tasks
+        if trade_monitor:
+            trade_monitor_task = asyncio.create_task(
+                trade_monitor.monitor_continuously(), name="trade_monitor"
+            )
+            tasks.append(trade_monitor_task)
+
+        if position_monitor:
+            position_monitor_task = asyncio.create_task(
+                position_monitor.monitor_continuously(), name="position_monitor"
+            )
+            tasks.append(position_monitor_task)
+
+        # Create discovery loop task
+        discovery_task = asyncio.create_task(
+            discovery_loop(
+                args, async_client, graphql_client, analyzer, scorer, state, discord_bot
+            ),
+            name="discovery",
+        )
+        tasks.append(discovery_task)
+
+        # Wait for all tasks or cancellation
         try:
-            iteration = 0
-            max_iterations = getattr(args, "max_iterations", None)
-
-            while True:
-                iteration += 1
-
-                if max_iterations and iteration > max_iterations:
-                    print(
-                        f"\nReached max iterations ({max_iterations}), shutting down..."
-                    )
-                    break
-
-                # 1. DISCOVER new wallets
-                print(f"\n🔄 Iteration {iteration}")
-                new_addrs = await discover_traders_from_events(
-                    graphql_client, state, limit=100
-                )
-
-                if new_addrs:
-                    # Limit to configured batch size
-                    new_addrs = new_addrs[: args.wallets_per_iteration]
-
-                    # 2. BATCH ANALYZE
-                    print(f"\n📦 Analyzing batch of {len(new_addrs)} wallets...")
-                    batch_start = time.time()
-
-                    profiles = await analyze_and_score_traders_batch(
-                        async_client,
-                        new_addrs,
-                        state,
-                        analyzer,
-                        scorer,
-                        args.max_trades,
-                    )
-
-                    batch_time = time.time() - batch_start
-
-                    # 3. Process results
-                    for profile in profiles:
-                        state.total_scanned += 1
-                        level = profile.get("level", "NONE")
-
-                        # Add HIGH/CRITICAL to monitoring
-                        if level in ["HIGH", "CRITICAL"]:
-                            addr = profile["address"].lower()
-                            state.master_profiles[addr] = profile
-
-                            # Log detection
-                            score = profile.get(
-                                "risk_score", profile.get("total_score", 0)
-                            )
-                            print(
-                                f"  🎯 DETECTED: {addr[:20]}... | "
-                                f"Score: {score:.1f}/10 | Level: {level}"
-                            )
-
-                    print(f"\n  ⏱️  Batch time: {batch_time:.2f}s")
-                    print(
-                        f"  📈 Throughput: {len(new_addrs) / batch_time:.1f} wallets/s"
-                    )
-
-                    # 4. Discord notification every 10 high-signal traders
-                    if discord_bot:
-                        current_count = len(state.master_profiles)
-                        if (
-                            current_count > 0
-                            and current_count % 10 == 0
-                            and state.last_notified_count < current_count
-                        ):
-                            state.last_notified_count = current_count
-                            print(
-                                f"\n📱 Discord: Sending update ({current_count} monitored)...",
-                                flush=True,
-                            )
-                            try:
-                                discord_bot.send_summary_table(
-                                    list(state.master_profiles.values())
-                                )
-                            except Exception as e:
-                                print(f"\n❌ Discord error: {e}", flush=True)
-
-                # 5. Status update
-                elapsed = time.time() - state.start_time
-                print(
-                    f"\n📡 Monitoring {len(state.master_profiles)} High-Signal Traders | "
-                    f"Total Trades: {state.total_trades_fetched:,} | "
-                    f"Elapsed: {elapsed:.0f}s"
-                )
-
-                # Sleep to prevent CPU spinning
-                await asyncio.sleep(2)
-
+            # Wait for discovery task (this is the main one)
+            await discovery_task
         except KeyboardInterrupt:
-            print("\n\nShutting down...")
+            print("\n\n🛑 Shutting down gracefully...")
         finally:
+            # Cancel all background tasks
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
             if discord_bot:
                 discord_bot.close()
             graphql_client.close()
+
+            print("\n✅ All monitors stopped")
+
+
+async def discovery_loop(
+    args, async_client, graphql_client, analyzer, scorer, state, discord_bot
+):
+    """Main discovery and analysis loop."""
+    iteration = 0
+    max_iterations = getattr(args, "max_iterations", None)
+
+    try:
+        while True:
+            iteration += 1
+
+            if max_iterations and iteration > max_iterations:
+                print(
+                    f"\n✅ Reached max iterations ({max_iterations}), shutting down..."
+                )
+                break
+
+            # 1. DISCOVER new wallets
+            print(f"\n🔄 Iteration {iteration}")
+            new_addrs = await discover_traders_from_events(
+                graphql_client, state, limit=100
+            )
+
+            if new_addrs:
+                # Limit to configured batch size
+                new_addrs = new_addrs[: args.wallets_per_iteration]
+
+                # 2. BATCH ANALYZE
+                print(f"\n📦 Analyzing batch of {len(new_addrs)} wallets...")
+                batch_start = time.time()
+
+                profiles = await analyze_and_score_traders_batch(
+                    async_client,
+                    new_addrs,
+                    state,
+                    analyzer,
+                    scorer,
+                    args.max_trades,
+                )
+
+                batch_time = time.time() - batch_start
+
+                # 3. Process results
+                for profile in profiles:
+                    state.total_scanned += 1
+                    level = profile.get("level", "NONE")
+
+                    # Add HIGH/CRITICAL to monitoring
+                    if level in ["HIGH", "CRITICAL"]:
+                        addr = profile["address"].lower()
+                        state.master_profiles[addr] = profile
+
+                        # Log detection
+                        score = profile.get("risk_score", profile.get("total_score", 0))
+                        print(
+                            f"  🎯 DETECTED: {addr[:20]}... | "
+                            f"Score: {score:.1f}/10 | Level: {level}"
+                        )
+
+                print(f"\n  ⏱️  Batch time: {batch_time:.2f}s")
+                print(f"  📈 Throughput: {len(new_addrs) / batch_time:.1f} wallets/s")
+
+                # 4. Discord notification every 10 high-signal traders
+                if discord_bot:
+                    current_count = len(state.master_profiles)
+                    if (
+                        current_count > 0
+                        and current_count % 10 == 0
+                        and state.last_notified_count < current_count
+                    ):
+                        state.last_notified_count = current_count
+                        print(
+                            f"\n📱 Discord: Sending update ({current_count} monitored)...",
+                            flush=True,
+                        )
+                        try:
+                            discord_bot.send_summary_table(
+                                list(state.master_profiles.values())
+                            )
+                        except Exception as e:
+                            print(f"\n❌ Discord error: {e}", flush=True)
+
+            # 5. Status update
+            elapsed = time.time() - state.start_time
+            print(
+                f"\n📡 Monitoring {len(state.master_profiles)} High-Signal Traders | "
+                f"Total Trades: {state.total_trades_fetched:,} | "
+                f"Elapsed: {elapsed:.0f}s"
+            )
+
+            # Sleep to prevent CPU spinning
+            await asyncio.sleep(2)
+
+    except asyncio.CancelledError:
+        print("Discovery loop cancelled")
+        raise
 
 
 def main():
@@ -325,6 +387,18 @@ def main():
         type=int,
         default=None,
         help="Max iterations for testing (default: infinite)",
+    )
+    parser.add_argument(
+        "--trade-poll-interval",
+        type=int,
+        default=20,
+        help="Seconds between trade polls for real-time notifications (default: 20)",
+    )
+    parser.add_argument(
+        "--position-poll-interval",
+        type=int,
+        default=300,
+        help="Seconds between position polls (default: 300 = 5 minutes)",
     )
     args = parser.parse_args()
 
