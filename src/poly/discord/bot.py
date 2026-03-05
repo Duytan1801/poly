@@ -161,7 +161,7 @@ class DiscordBotClient:
         }
 
         payload = {"embeds": [embed]}
-        url = f"{self.base_url}/channels/1478038222855733292/messages"  # trades-holding channel
+        url = f"{self.base_url}/channels/{self.channels['trades']}/messages"
 
         try:
             self.client.post(url, headers=self.headers, json=payload)
