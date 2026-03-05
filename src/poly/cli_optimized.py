@@ -634,6 +634,18 @@ def main():
         default=6379,
         help="Redis port (default: 6379)",
     )
+    parser.add_argument(
+        "--discord-bot-token",
+        type=str,
+        default=None,
+        help="Discord bot token (default: from DISCORD_BOT_TOKEN env var)",
+    )
+    parser.add_argument(
+        "--alchemy-api-key",
+        type=str,
+        default=None,
+        help="Alchemy API key for blockchain data (default: from ALCHEMY_API_KEY env var)",
+    )
     args = parser.parse_args()
 
     asyncio.run(run_optimized_event_engine(args))

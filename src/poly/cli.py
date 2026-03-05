@@ -164,10 +164,9 @@ def analyze_and_score_trader(
         )
 
         # 3. Score
-        clusterer = SybilClusterer(alchemy_api_key=alchemy_key)
+        clusterer = SybilClusterer()
         profile = clusterer.detect_clusters([profile])[0]
         scored_profile = scorer.fit_and_score([profile])[0]
-        clusterer.close()
 
         return scored_profile
     except:
@@ -177,10 +176,10 @@ def analyze_and_score_trader(
 def run_event_engine(args):
     """Main execution loop for the event-driven engine."""
     client = PolymarketClient()
+    discord_bot = DiscordBotClient(token=args.discord_bot_token)
     analyzer = ComprehensiveAnalyzer()
     scorer = InsiderScorer()
     state = EngineState()
-    discord_bot = DiscordBotClient()
 
     print("\n🚀 EVENT-DRIVEN INTELLIGENCE HUB ONLINE", flush=True)
     print("---------------------------------------", flush=True)
@@ -210,47 +209,17 @@ def run_event_engine(args):
                 with ThreadPoolExecutor(max_workers=args.workers) as executor:
                     jobs = [
                         executor.submit(
-                            analyze_and_score_trader,
+                            analyze_trader_wrapper,
                             client,
                             addr,
                             state,
                             analyzer,
                             scorer,
-                            args.alchemy_key,
+                            args.alchemy_api_key,
                             args.max_trades,
                         )
                         for addr in new_addrs
                     ]
-                    for f in as_completed(jobs):
-                        profile = f.result()
-                        if profile:
-                            state.total_scanned += 1
-                            level = profile.get("level", "NONE")
-
-                            # Add HIGH/CRITICAL to monitoring only
-                            if level in ["HIGH", "CRITICAL"]:
-                                state.master_profiles[profile["address"].lower()] = (
-                                    profile
-                                )
-
-                                # Send Discord every 10 in master_profiles (once per threshold)
-                                current_count = len(state.master_profiles)
-                                if (
-                                    current_count > 0
-                                    and current_count % 10 == 0
-                                    and state.last_notified_count < current_count
-                                ):
-                                    state.last_notified_count = current_count
-                                    print(
-                                        f"\n📱 Discord: Sending update ({current_count} monitored)...",
-                                        flush=True,
-                                    )
-                                    try:
-                                        discord_bot.send_summary_table(
-                                            list(state.master_profiles.values())
-                                        )
-                                    except Exception as e:
-                                        print(f"\n❌ Discord error: {e}", flush=True)
 
             # 2. STATUS UPDATE
             print(
@@ -286,13 +255,13 @@ def run_event_engine(args):
                 with ThreadPoolExecutor(max_workers=args.workers) as executor:
                     jobs = [
                         executor.submit(
-                            analyze_and_score_trader,
+                            analyze_trader_wrapper,
                             client,
                             addr,
                             state,
                             analyzer,
                             scorer,
-                            args.alchemy_key,
+                            args.alchemy_api_key,
                             args.max_trades,
                         )
                         for addr in new_addrs
@@ -321,7 +290,12 @@ def main():
     parser = argparse.ArgumentParser(description="Event Intelligence Engine")
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--max-trades", type=int, default=100000)
-    parser.add_argument("--alchemy-key", type=str, default="ZEylhnL9v0MkREhv-CjLY")
+    parser.add_argument(
+        "--alchemy-api-key",
+        type=str,
+        default=None,
+        help="Alchemy API key for blockchain data (default: from ALCHEMY_API_KEY env var)",
+    )
     parser.add_argument(
         "--max-iterations",
         type=int,
@@ -339,6 +313,12 @@ def main():
         type=int,
         default=10,
         help="Number of wallets to analyze per iteration (default: 10)",
+    )
+    parser.add_argument(
+        "--discord-bot-token",
+        type=str,
+        default=None,
+        help="Discord bot token (default: from DISCORD_BOT_TOKEN env var)",
     )
     args = parser.parse_args()
     run_event_engine(args)

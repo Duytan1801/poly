@@ -12,11 +12,16 @@ logger = logging.getLogger(__name__)
 class DiscordBotClient:
     """Uses the Poly Bot token to send formatted embeds to specific channels."""
 
-    def __init__(self, optional: bool = False):
+    def __init__(self, token: str = None, optional: bool = False):
         import os
 
-        # Try to load from .env file if not in environment
-        self.token = os.environ.get("DISCORD_BOT_TOKEN")
+        # Priority: 1. Explicit token parameter, 2. Environment variable, 3. .env file
+        self.token = token
+
+        if not self.token:
+            # Try to load from environment
+            self.token = os.environ.get("DISCORD_BOT_TOKEN")
+
         if not self.token:
             # Try loading from .env file
             try:
@@ -30,7 +35,7 @@ class DiscordBotClient:
         if not self.token:
             if not optional:
                 raise ValueError(
-                    "DISCORD_BOT_TOKEN not found. Set it in .env file or environment variable"
+                    "DISCORD_BOT_TOKEN not found. Set it via --discord-bot-token flag, .env file, or environment variable"
                 )
             self.token = None
         self.base_url = "https://discord.com/api/v10"

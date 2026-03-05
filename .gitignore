@@ -50,3 +50,7 @@ Thumbs.db
 # Lock files
 uv.lock
 .env
+
+# Test files
+test_*.py
+*_test.py
