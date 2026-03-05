@@ -164,13 +164,16 @@ class MarketVolumeMonitor:
         self.market_refresh_interval = market_refresh_interval
 
         self.top_n_markets = 100
+        self.min_volume_threshold = 900000  # Only monitor markets with >$900k volume
         self.volume_threshold_tiers = {
-            "TIER_1": 100000,
-            "TIER_2": 250000,
-            "TIER_3": 500000,
+            "TIER_1": 900000,  # $900k minimum threshold
+            "TIER_2": 1500000,  # $1.5M threshold
+            "TIER_3": 2500000,  # $2.5M threshold (critical)
         }
-        self.volume_threshold_pct = 0.05
-        self.threshold_max = 1000000
+        self.volume_threshold_pct = (
+            0.02  # Lower percentage for higher absolute threshold
+        )
+        self.threshold_max = 5000000  # Increase max to $5M for very high volume markets
 
         self.market_state = GlobalMarketState()
         self.last_market_refresh = 0
@@ -251,8 +254,8 @@ class MarketVolumeMonitor:
     async def _fetch_and_process_trades(self):
         from poly.api.async_client import AsyncPolymarketClient
 
-        current_time = time.time() * 1000
-        window_start = current_time - (self.window_size_hours * 3600 * 1000)
+        current_time = int(time.time() * 1000)
+        window_start = int(current_time - (self.window_size_hours * 3600 * 1000))
 
         markets = list(self.market_state.market_windows.keys())
         batch_size = 10
@@ -302,6 +305,10 @@ class MarketVolumeMonitor:
 
         for cid, window in self.market_state.market_windows.items():
             metrics = window.get_metrics()
+
+            # Only alert if 1-hour volume exceeds $900k minimum
+            if metrics["total_volume"] < self.min_volume_threshold:
+                continue
 
             if not metrics["above_threshold"]:
                 continue

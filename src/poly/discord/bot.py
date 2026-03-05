@@ -39,7 +39,13 @@ class DiscordBotClient:
             "Content-Type": "application/json",
         }
         self.client = httpx.Client(timeout=10.0)
-        self.whale_channel = "1478038183873740972"
+        # Channel mappings for different types of notifications
+        self.channels = {
+            "whales": "1478038183873740972",  # #big-whales - for new whale discoveries
+            "trades": "1478038222855733292",  # #trades-holding - for live trade activity
+            "positions": "1478038222855733292",  # #trades-holding - for position updates
+            "market_anomalies": "1478038222855733292",  # #trades-holding - for market volume alerts
+        }
 
     def send_trader_embed(self, profile: Dict[str, Any]):
         """Post a high-signal trader alert to the #big-whales channel."""
@@ -111,7 +117,7 @@ class DiscordBotClient:
         embed["footer"] = {"text": "🛰️ Poly Intelligence Hub | Smart Money Scanner"}
 
         payload = {"embeds": [embed]}
-        url = f"{self.base_url}/channels/{self.whale_channel}/messages"
+        url = f"{self.base_url}/channels/{self.channels['whales']}/messages"
 
         try:
             resp = self.client.post(url, headers=self.headers, json=payload)
@@ -232,7 +238,7 @@ class DiscordBotClient:
                 "footer": {"text": "🛰️ Poly Intelligence Hub | Smart Money Scanner"},
             }
 
-            url = f"{self.base_url}/channels/{self.whale_channel}/messages"
+            url = f"{self.base_url}/channels/{self.channels['whales']}/messages"
             try:
                 resp = self.client.post(
                     url, headers=self.headers, json={"embeds": [embed]}

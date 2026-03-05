@@ -43,7 +43,7 @@ def main():
     client = PolymarketClient()
     analyzer = ComprehensiveAnalyzer()
     scorer = InsiderScorer()
-    clusterer = SybilClusterer(alchemy_api_key=None)
+    clusterer = SybilClusterer()
 
     print("\n1. Fetching 1000+ traders from Polymarket...")
     traders = fetch_all_traders(client, target=1000)
@@ -170,13 +170,8 @@ def main():
     print(f"MEDIUM: {sum(1 for p in scored if p['level'] == 'MEDIUM')}")
     print(f"LOW: {sum(1 for p in scored if p['level'] == 'LOW')}")
 
-    pop_stats = scorer.population_stats
-    print(f"\nPopulation Statistics:")
-    print(f"  Winrate mean: {pop_stats.get('winrate_mean', 0):.1%}")
-    print(f"  Winrate std: {pop_stats.get('winrate_std', 0):.1%}")
     print("=" * 60)
 
-    clusterer.close()
     client.close()
 
 
