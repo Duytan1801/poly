@@ -94,7 +94,7 @@ async def analyze_and_score_traders_batch(
             liquid_metadata = {
                 cid: meta
                 for cid, meta in new_metadata.items()
-                if meta.get("liquidity", 0) >= 50000
+                if float(meta.get("liquidity", 0) or 0) >= 50000
             }
 
             filtered_count = len(new_metadata) - len(liquid_metadata)
