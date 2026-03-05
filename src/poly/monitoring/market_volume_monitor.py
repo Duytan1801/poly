@@ -108,7 +108,7 @@ class GlobalMarketState:
     def __init__(self):
         self.market_windows: Dict[str, MarketTradingWindow] = {}
         self.alert_history: Dict[str, List[Dict]] = defaultdict(list)
-        self.alert_cooldown_minutes = 15
+        self.alert_cooldown_minutes = 5  # Reduced from 15 to 5 for faster re-alerts
         self.total_alerts_sent = 0
         self.markets_monitored = 0
 
@@ -155,8 +155,8 @@ class MarketVolumeMonitor:
         self,
         discord_bot,
         state,
-        poll_interval: int = 60,
-        market_refresh_interval: int = 300,
+        poll_interval: int = 15,  # Reduced from 60s to 15s for 4x faster detection
+        market_refresh_interval: int = 120,  # Reduced from 300s to 120s
     ):
         self.discord_bot = discord_bot
         self.state = state
@@ -177,7 +177,9 @@ class MarketVolumeMonitor:
 
         self.market_state = GlobalMarketState()
         self.last_market_refresh = 0
-        self.window_size_hours = 1
+        self.window_size_hours = (
+            0.5  # Reduced from 1h to 30min for faster spike detection
+        )
 
     async def monitor_continuously(self):
         logger.info("Starting market volume monitor...")
@@ -258,8 +260,8 @@ class MarketVolumeMonitor:
         window_start = int(current_time - (self.window_size_hours * 3600 * 1000))
 
         markets = list(self.market_state.market_windows.keys())
-        batch_size = 10
-        batch_delay = 0.5
+        batch_size = 20  # Increased from 10 to 20 for faster processing
+        batch_delay = 0.2  # Reduced from 0.5s to 0.2s for faster batching
 
         for i in range(0, len(markets), batch_size):
             batch = markets[i : i + batch_size]

@@ -583,14 +583,14 @@ def main():
     parser.add_argument(
         "--market-monitor-interval",
         type=int,
-        default=60,
-        help="Seconds between market volume checks (default: 60)",
+        default=15,  # Reduced from 60 to 15 for 4x faster detection
+        help="Seconds between market volume checks (default: 15)",
     )
     parser.add_argument(
         "--market-refresh-interval",
         type=int,
-        default=300,
-        help="Seconds between refreshing top markets list (default: 300 = 5 minutes)",
+        default=120,  # Reduced from 300 to 120 for faster market list updates
+        help="Seconds between refreshing top markets list (default: 120 = 2 minutes)",
     )
     parser.add_argument(
         "--min-trade-size",
