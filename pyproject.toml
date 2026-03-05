@@ -4,36 +4,80 @@ build-backend = "hatchling.build"
 
 [project]
 name = "poly"
-version = "0.3.0"
-description = "Polymarket ML Pipeline - Insider Detection with IAX"
-readme = "README.md"
-requires-python = ">=3.10"
+version = "0.4.0"
+description = "Polymarket Unified Insider Detection - Python 3.14 Free-Threaded"
+readme = "UNIFIED_SYSTEM_README.md"
+requires-python = ">=3.14"
 dependencies = [
   "httpx>=0.25.0",
   "pandas>=2.0.0",
   "numpy>=1.24.0",
+  "polars>=0.20.0",
+  "msgpack>=1.1.0",
+  "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+# Legacy modular system dependencies
+legacy = [
   "numba>=0.58.0",
   "perpetual>=1.0.0",
   "pyarrow>=12.0.0",
   "fastparquet>=2023.4.0",
-  "polars>=0.20.0",
   "openai>=1.0.0",
   "duckduckgo_search>=5.0.0",
   "websockets>=12.0",
   "rich>=13.0",
   "matplotlib>=3.7.0",
   "web3>=7.14.1",
-  "msgpack>=1.1.2",
   "scipy>=1.10.0",
-  "python-dotenv>=1.0.0",
   "redis>=5.0.0",
 ]
 
+# Development dependencies
+dev = [
+  "pytest>=7.0.0",
+  "pytest-asyncio>=0.21.0",
+  "pytest-cov>=4.0.0",
+  "black>=23.0.0",
+  "ruff>=0.1.0",
+  "mypy>=1.0.0",
+]
+
+# Full installation (unified + legacy)
+full = [
+  "poly[legacy,dev]",
+]
+
 [project.scripts]
-poly = "poly.main:main"
+poly-unified = "poly.unified_insider_detector:main"
+poly-legacy = "poly.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/poly"]
 
-[dependency-groups]
-dev = ["pytest>=7.0.0"]
+[tool.uv]
+# UV-specific configuration
+dev-dependencies = [
+  "pytest>=7.0.0",
+  "pytest-asyncio>=0.21.0",
+  "pytest-cov>=4.0.0",
+]
+
+[tool.uv.sources]
+# Use Python 3.14 free-threaded build
+python-version = "3.14"
+
+[tool.black]
+line-length = 100
+target-version = ["py314"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.mypy]
+python_version = "3.14"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false

@@ -485,6 +485,21 @@ class PolymarketClient:
 
         return trades
 
+    def get_positions_total_value(self, address: str) -> float:
+        """
+        Calculate total position value from positions API.
+        
+        Much faster than calculating from trade history.
+        
+        Args:
+            address: Trader wallet address
+            
+        Returns:
+            Total value of all positions
+        """
+        positions = self.get_positions(address)
+        return sum(float(p.get('value', 0)) for p in positions)
+
     def close(self):
         """Close the underlying HTTP client session."""
         self.http.close()
