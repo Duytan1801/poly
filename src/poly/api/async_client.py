@@ -21,10 +21,14 @@ class AsyncPolymarketClient:
         trades_concurrency: int = 20,
         markets_concurrency: int = 30,
         timeout: float = 60.0,
+        redis_cache=None,
     ):
         self.gamma_base = "https://gamma-api.polymarket.com"
         self.data_base = "https://data-api.polymarket.com"
         self.clob_base = "https://clob.polymarket.com"
+
+        # Redis cache (optional)
+        self.redis_cache = redis_cache
 
         # Connection pooling for speed
         self.client = httpx.AsyncClient(
@@ -67,16 +71,26 @@ class AsyncPolymarketClient:
         return None
 
     async def fetch_trader_history_single(
-        self, address: str, limit: int = 1000, offset: int = 0
+        self,
+        address: str,
+        limit: int = 1000,
+        offset: int = 0,
+        min_size: Optional[float] = None,
     ) -> List[Dict]:
         """Fetch a single batch of trades for a trader."""
         async with self.trades_semaphore:
             params = {"user": address, "limit": limit, "offset": offset}
+            if min_size is not None:
+                params["min_size"] = min_size
             data = await self._safe_get(f"{self.data_base}/trades", params=params)
             return data if isinstance(data, list) else []
 
     async def fetch_full_trader_history(
-        self, address: str, max_trades: int = 10000, batch_size: int = 1000
+        self,
+        address: str,
+        max_trades: int = 10000,
+        batch_size: int = 1000,
+        min_size: Optional[float] = None,
     ) -> List[Dict]:
         """Fetch complete trading history for a single user with async pagination."""
         all_trades = []
@@ -86,7 +100,7 @@ class AsyncPolymarketClient:
         offset = 0
         while offset < max_trades:
             task = self.fetch_trader_history_single(
-                address, limit=batch_size, offset=offset
+                address, limit=batch_size, offset=offset, min_size=min_size
             )
             tasks.append(task)
             offset += batch_size
@@ -105,20 +119,30 @@ class AsyncPolymarketClient:
         return all_trades[:max_trades]
 
     async def fetch_trader_histories_batch(
-        self, addresses: List[str], max_trades: int = 1000
+        self,
+        addresses: List[str],
+        max_trades: int = 1000,
+        min_size: Optional[float] = None,
     ) -> Dict[str, List[Dict]]:
         """
         Fetch histories for multiple traders concurrently.
         This is the main optimization - fetch N wallets in parallel.
         """
         tasks = {
-            addr: self.fetch_full_trader_history(addr, max_trades) for addr in addresses
+            addr: self.fetch_full_trader_history(addr, max_trades, min_size=min_size)
+            for addr in addresses
         }
         results = await asyncio.gather(*tasks.values())
         return dict(zip(tasks.keys(), results))
 
     async def get_market_info_single(self, condition_id: str) -> Dict[str, Any]:
-        """Fetch metadata for a single market."""
+        """Fetch metadata for a single market with Redis caching."""
+        # Check Redis cache first
+        if self.redis_cache:
+            cached = self.redis_cache.get_market_metadata(condition_id)
+            if cached:
+                return cached
+
         async with self.markets_semaphore:
             data = await self._safe_get(
                 f"{self.gamma_base}/markets",
@@ -129,7 +153,7 @@ class AsyncPolymarketClient:
                 return {}
 
             market = data[0]
-            return {
+            result = {
                 "condition_id": condition_id,
                 "question": market.get("question", ""),
                 "group_item_title": market.get("groupItemTitle", ""),
@@ -141,6 +165,12 @@ class AsyncPolymarketClient:
                 "closed": market.get("closed", False),
                 "clobTokenIds": market.get("clobTokenIds", []),
             }
+
+            # Cache in Redis (24h TTL)
+            if self.redis_cache:
+                self.redis_cache.set_market_metadata(condition_id, result)
+
+            return result
 
     async def get_market_info_batch(
         self, condition_ids: List[str]
@@ -156,9 +186,18 @@ class AsyncPolymarketClient:
     async def get_market_resolution_state(
         self, condition_id: str, cache: Optional[Dict] = None
     ) -> Dict[str, Any]:
-        """Fetch market resolution state (winner, closed timestamp)."""
+        """Fetch market resolution state (winner, closed timestamp) with Redis caching."""
+        # Check memory cache first
         if cache and condition_id in cache:
             return cache[condition_id]
+
+        # Check Redis cache
+        if self.redis_cache:
+            cached = self.redis_cache.get_resolution(condition_id)
+            if cached:
+                if cache is not None:
+                    cache[condition_id] = cached
+                return cached
 
         async with self.markets_semaphore:
             data = await self._safe_get(
@@ -202,8 +241,13 @@ class AsyncPolymarketClient:
                     "clobTokenIds": market.get("clobTokenIds", []),
                 }
 
+                # Cache in memory
                 if cache is not None:
                     cache[condition_id] = result
+
+                # Cache in Redis (7d TTL - resolutions are immutable)
+                if self.redis_cache:
+                    self.redis_cache.set_resolution(condition_id, result)
 
                 return result
             except Exception:

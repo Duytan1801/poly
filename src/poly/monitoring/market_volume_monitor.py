@@ -439,7 +439,7 @@ class MarketVolumeMonitor:
                 }
             )
 
-        url = f"{self.discord_bot.base_url}/channels/1478038222855733292/messages"
+        url = f"{self.discord_bot.base_url}/channels/{self.discord_bot.channels['market_anomalies']}/messages"
 
         resp = self.discord_bot.client.post(
             url, headers=self.discord_bot.headers, json={"embeds": [embed]}

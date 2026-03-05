@@ -41,10 +41,10 @@ class DiscordBotClient:
         self.client = httpx.Client(timeout=10.0)
         # Channel mappings for different types of notifications
         self.channels = {
-            "whales": "1478038183873740972",  # #big-whales - for new whale discoveries
-            "trades": "1478038222855733292",  # #trades-holding - for live trade activity
+            "whales": "1478038183873740972",  # #big-whales - for discovering new traders
+            "trades": "1478038222855733292",  # #trades-holding - for when traders place bets
             "positions": "1478038222855733292",  # #trades-holding - for position updates
-            "market_anomalies": "1478038222855733292",  # #trades-holding - for market volume alerts
+            "market_anomalies": "1478949894306922567",  # #live-scanning - for group volume scanning
         }
 
     def send_trader_embed(self, profile: Dict[str, Any]):

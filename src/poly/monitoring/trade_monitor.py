@@ -27,7 +27,7 @@ class RealTimeTradeMonitor:
         self.poll_interval = poll_interval
 
         # Configuration
-        self.min_trade_size = 5000  # $5,000 minimum for notifications
+        self.min_trade_size = 1000000  # $1,000,000 minimum for notifications
         self.deduplication_window = 60  # 60 seconds wait for same market
 
         # Trade deduplication tracking
@@ -312,7 +312,7 @@ class RealTimeTradeMonitor:
             }
 
             # Send to trades-holding channel
-            url = f"{self.discord_bot.base_url}/channels/1478038222855733292/messages"
+            url = f"{self.discord_bot.base_url}/channels/{self.discord_bot.channels['trades']}/messages"
 
             resp = self.discord_bot.client.post(
                 url, headers=self.discord_bot.headers, json={"embeds": [embed]}

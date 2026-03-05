@@ -15,6 +15,7 @@ from poly.intelligence.clustering import SybilClusterer
 from poly.discord.bot import DiscordBotClient
 from poly.api.graphql import GraphQLClient
 from poly.monitoring import RealTimeTradeMonitor, PositionMonitor, MarketVolumeMonitor
+from poly.cache import RedisCache
 
 logging.getLogger("httpx").setLevel(logging.CRITICAL)
 logging.getLogger("poly").setLevel(logging.CRITICAL)
@@ -47,14 +48,18 @@ async def analyze_and_score_traders_batch(
     analyzer: ComprehensiveAnalyzer,
     scorer: InsiderScorer,
     max_trades: int = 200,
+    min_trade_size: float = 1000.0,
+    leaderboard_cache: Dict = {},
 ):
     """Analyze multiple traders in parallel with batch operations."""
     try:
-        # 1. BATCH: Fetch all trader histories concurrently
-        print(f"\n  ⚡ Fetching histories for {len(addresses)} wallets...")
+        # 1. BATCH: Fetch all trader histories concurrently with server-side filtering
+        print(
+            f"\n  ⚡ Fetching histories for {len(addresses)} wallets (min_size=${min_trade_size})..."
+        )
         start = time.time()
         histories = await async_client.fetch_trader_histories_batch(
-            addresses, max_trades=max_trades
+            addresses, max_trades=max_trades, min_size=min_trade_size
         )
         fetch_time = time.time() - start
         total_trades = sum(len(h) for h in histories.values())
@@ -78,15 +83,42 @@ async def analyze_and_score_traders_batch(
             res_time = time.time() - start
             print(f"     Resolutions fetched in {res_time:.2f}s")
 
-        # 4. BATCH: Fetch all market metadata concurrently
+        # 4. BATCH: Fetch all market metadata concurrently (with liquidity filtering and prioritization)
         new_cids = [cid for cid in all_cids if cid not in state.market_metadata_cache]
         if new_cids:
             print(f"  📁 Fetching {len(new_cids)} market metadata...")
             start = time.time()
             new_metadata = await async_client.get_market_info_batch(new_cids)
-            state.market_metadata_cache.update(new_metadata)
+
+            # Filter by liquidity threshold (>= $50k)
+            liquid_metadata = {
+                cid: meta
+                for cid, meta in new_metadata.items()
+                if meta.get("liquidity", 0) >= 50000
+            }
+
+            filtered_count = len(new_metadata) - len(liquid_metadata)
+            if filtered_count > 0:
+                print(
+                    f"     Filtered out {filtered_count} low-liquidity markets (<$50k)"
+                )
+
+            state.market_metadata_cache.update(liquid_metadata)
             meta_time = time.time() - start
             print(f"     Metadata fetched in {meta_time:.2f}s")
+
+        # 4b. Prioritize markets by signal strength (optional optimization)
+        # Only analyze top 70% of markets by liquidity + volume + category score
+        from poly.intelligence.prioritization import prioritize_markets
+
+        prioritized_cids = prioritize_markets(
+            list(all_cids), state.market_metadata_cache, top_percent=0.7
+        )
+
+        if len(prioritized_cids) < len(all_cids):
+            print(
+                f"  🎯 Prioritized {len(prioritized_cids)}/{len(all_cids)} markets by signal strength"
+            )
 
         # 5. Analyze each trader (can be done in parallel with ThreadPool)
         print(f"  🧠 Analyzing {len(addresses)} traders...")
@@ -112,23 +144,29 @@ async def analyze_and_score_traders_batch(
                 == state.resolution_cache.get(tr["conditionId"], {}).get("winner_idx")
             )
 
-            # Calculate PnL
-            pnl = 0
-            for tr in res_trades:
-                cid = tr.get("conditionId")
-                if not cid or cid not in state.resolution_cache:
-                    continue
-                size = float(tr.get("size", 0))
-                price = float(tr.get("price", 0))
-                outcome_idx = tr.get("outcomeIndex")
-                winner_idx = state.resolution_cache[cid].get("winner_idx")
+            # Use pre-computed PnL from leaderboard if available
+            addr_lower = addr.lower()
+            if leaderboard_cache and addr_lower in leaderboard_cache:
+                pnl = leaderboard_cache[addr_lower].get("pnl", 0)
+                print(f"     Using cached PnL for {addr[:8]}... = ${pnl:,.2f}")
+            else:
+                # Fallback: Calculate PnL manually
+                pnl = 0
+                for tr in res_trades:
+                    cid = tr.get("conditionId")
+                    if not cid or cid not in state.resolution_cache:
+                        continue
+                    size = float(tr.get("size", 0))
+                    price = float(tr.get("price", 0))
+                    outcome_idx = tr.get("outcomeIndex")
+                    winner_idx = state.resolution_cache[cid].get("winner_idx")
 
-                if outcome_idx is None or winner_idx is None:
-                    continue
-                if int(outcome_idx) == int(winner_idx):
-                    pnl += size * (1 - price)
-                else:
-                    pnl -= size * price
+                    if outcome_idx is None or winner_idx is None:
+                        continue
+                    if int(outcome_idx) == int(winner_idx):
+                        pnl += size * (1 - price)
+                    else:
+                        pnl -= size * price
 
             profile.update(
                 {
@@ -188,7 +226,34 @@ async def discover_traders_from_events(
 
 async def run_optimized_event_engine(args):
     """Main execution loop with batch optimizations and real-time monitoring."""
-    async with AsyncPolymarketClient() as async_client:
+    # Initialize Redis cache (optional, but enabled by default)
+    redis_cache = None
+    if getattr(args, "use_redis", True):  # Default to True if not specified
+        print("\n🗄️  Initializing Redis cache...")
+        redis_cache = RedisCache(
+            host=getattr(args, "redis_host", "localhost"),
+            port=getattr(args, "redis_port", 6379),
+            enabled=True,
+        )
+        if redis_cache.enabled:
+            print("   ✅ Redis cache connected")
+        else:
+            print("   ⚠️  Redis unavailable, running without cache")
+            redis_cache = None
+    else:
+        print("\n   Redis caching disabled by user")
+    if args.use_redis:
+        print("\n🗄️  Initializing Redis cache...")
+        redis_cache = RedisCache(
+            host=args.redis_host, port=args.redis_port, enabled=True
+        )
+        if redis_cache.enabled:
+            print("   ✅ Redis cache connected")
+        else:
+            print("   ⚠️  Redis unavailable, running without cache")
+            redis_cache = None
+
+    async with AsyncPolymarketClient(redis_cache=redis_cache) as async_client:
         graphql_client = GraphQLClient()
         analyzer = ComprehensiveAnalyzer()
         scorer = InsiderScorer()
@@ -290,11 +355,60 @@ async def run_optimized_event_engine(args):
 async def discovery_loop(
     args, async_client, graphql_client, analyzer, scorer, state, discord_bot
 ):
-    """Main discovery and analysis loop."""
+    """Main discovery and analysis loop with WebSocket streaming option."""
     iteration = 0
     max_iterations = getattr(args, "max_iterations", None)
 
+    # Fetch leaderboard once for PnL caching
+    print("\n📊 Fetching leaderboard for PnL caching...")
+    leaderboard_data = await async_client.get_leaderboard(limit=2000)
+    leaderboard_cache = {
+        entry.get("proxyWallet", "").lower(): entry
+        for entry in leaderboard_data
+        if entry.get("proxyWallet")
+    }
+    print(f"   Cached PnL for {len(leaderboard_cache)} traders from leaderboard")
+
+    # Use WebSocket streaming if available, otherwise fall back to GraphQL polling
+    use_websocket = getattr(args, "use_websocket", True)  # Default to True
+    websocket_monitor = None
+    address_queue = None  # Initialize here to avoid unbound variable
+
+    if use_websocket:
+        print("\n🔌 Initializing WebSocket streaming...")
+        try:
+            from poly.api.websocket_client import WebSocketTradeMonitor
+
+            # Queue to store new addresses from WebSocket events
+            address_queue = asyncio.Queue()
+
+            async def handle_new_addresses(addresses):
+                """Handle new addresses from WebSocket events."""
+                if address_queue:
+                    for addr in addresses:
+                        await address_queue.put(addr)
+
+            websocket_monitor = WebSocketTradeMonitor(
+                on_new_address=handle_new_addresses
+            )
+            print("   ✅ WebSocket initialized, connecting...")
+
+            # Start WebSocket in background
+            websocket_task = asyncio.create_task(websocket_monitor.start())
+        except ImportError:
+            print(
+                "   ⚠️  WebSocket module not available, falling back to GraphQL polling"
+            )
+            use_websocket = False
+        except Exception as e:
+            print(f"   ⚠️  WebSocket error: {e}, falling back to GraphQL polling")
+            use_websocket = False
+
     try:
+        # If WebSocket is being used, ensure we have an address queue
+        if use_websocket and address_queue is None:
+            address_queue = asyncio.Queue()
+
         while True:
             iteration += 1
 
@@ -304,11 +418,37 @@ async def discovery_loop(
                 )
                 break
 
-            # 1. DISCOVER new wallets
+            # 1. DISCOVER new wallets - use WebSocket or GraphQL
             print(f"\n🔄 Iteration {iteration}")
-            new_addrs = await discover_traders_from_events(
-                graphql_client, state, limit=100
-            )
+
+            new_addrs = []
+            if use_websocket and address_queue:
+                # Get addresses from WebSocket queue (non-blocking)
+                try:
+                    # Collect addresses from WebSocket queue
+                    while True:
+                        try:
+                            addr = address_queue.get_nowait()
+                            new_addrs.append(addr)
+                        except asyncio.QueueEmpty:
+                            break
+                except:
+                    pass  # No addresses available
+
+            # If no addresses from WebSocket, or WebSocket not used, fall back to GraphQL
+            if not new_addrs:
+                if use_websocket:
+                    # Still need some addresses occasionally, fall back to GraphQL briefly
+                    new_addrs = await discover_traders_from_events(
+                        graphql_client,
+                        state,
+                        limit=20,  # Smaller limit for backup
+                    )
+                else:
+                    # Traditional GraphQL polling
+                    new_addrs = await discover_traders_from_events(
+                        graphql_client, state, limit=100
+                    )
 
             if new_addrs:
                 # Limit to configured batch size
@@ -325,6 +465,8 @@ async def discovery_loop(
                     analyzer,
                     scorer,
                     args.max_trades,
+                    min_trade_size=args.min_trade_size,
+                    leaderboard_cache=leaderboard_cache,
                 )
 
                 batch_time = time.time() - batch_start
@@ -358,8 +500,9 @@ async def discovery_loop(
                 f"Elapsed: {elapsed:.0f}s"
             )
 
-            # Sleep to prevent CPU spinning
-            await asyncio.sleep(2)
+            # Sleep to prevent CPU spinning (faster response by default)
+            sleep_time = 0.5 if use_websocket else 1  # Faster polling by default
+            await asyncio.sleep(sleep_time)
 
             # 6. Discord notification when CRITICAL count passes multiples of 10
             # Run on EVERY iteration (not just when new_addrs > 0)
@@ -410,8 +553,8 @@ def main():
     parser.add_argument(
         "--wallets-per-iteration",
         type=int,
-        default=10,
-        help="Number of wallets to analyze per batch (default: 10)",
+        default=20,  # Increased default for better throughput
+        help="Number of wallets to analyze per batch (default: 20)",
     )
     parser.add_argument(
         "--max-trades",
@@ -428,14 +571,14 @@ def main():
     parser.add_argument(
         "--trade-poll-interval",
         type=int,
-        default=20,
-        help="Seconds between trade polls for real-time notifications (default: 20)",
+        default=10,  # Faster by default for real-time monitoring
+        help="Seconds between trade polls for real-time notifications (default: 10)",
     )
     parser.add_argument(
         "--position-poll-interval",
         type=int,
-        default=300,
-        help="Seconds between position polls (default: 300 = 5 minutes)",
+        default=120,  # Faster by default for position monitoring
+        help="Seconds between position polls (default: 120 = 2 minutes)",
     )
     parser.add_argument(
         "--market-monitor-interval",
@@ -448,6 +591,48 @@ def main():
         type=int,
         default=300,
         help="Seconds between refreshing top markets list (default: 300 = 5 minutes)",
+    )
+    parser.add_argument(
+        "--min-trade-size",
+        type=float,
+        default=1000.0,
+        help="Minimum trade size for server-side filtering (default: 1000.0)",
+    )
+    parser.add_argument(
+        "--use-redis",
+        action="store_true",
+        default=True,  # Enable Redis caching by default for maximum performance
+        help="Enable Redis caching for market metadata and resolutions (default: True)",
+    )
+    parser.add_argument(
+        "--no-redis",
+        action="store_false",
+        dest="use_redis",
+        help="Disable Redis caching (default: Redis enabled)",
+    )
+    parser.add_argument(
+        "--use-websocket",
+        action="store_true",
+        default=True,  # Enable WebSocket by default for real-time performance
+        help="Use WebSocket streaming instead of GraphQL polling for real-time events (default: True)",
+    )
+    parser.add_argument(
+        "--no-websocket",
+        action="store_false",
+        dest="use_websocket",
+        help="Disable WebSocket streaming, use GraphQL polling (default: WebSocket enabled)",
+    )
+    parser.add_argument(
+        "--redis-host",
+        type=str,
+        default="localhost",
+        help="Redis host (default: localhost)",
+    )
+    parser.add_argument(
+        "--redis-port",
+        type=int,
+        default=6379,
+        help="Redis port (default: 6379)",
     )
     args = parser.parse_args()
 
