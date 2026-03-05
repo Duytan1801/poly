@@ -209,7 +209,7 @@ def run_event_engine(args):
                 with ThreadPoolExecutor(max_workers=args.workers) as executor:
                     jobs = [
                         executor.submit(
-                            analyze_trader_wrapper,
+                            analyze_and_score_trader,
                             client,
                             addr,
                             state,
@@ -220,6 +220,16 @@ def run_event_engine(args):
                         )
                         for addr in new_addrs
                     ]
+
+                    for future in as_completed(jobs):
+                        try:
+                            profile = future.result()
+                            if profile and profile.get("insider_score", 0) >= 0.5:
+                                addr = profile["address"]
+                                state.master_profiles[addr] = profile
+                                state.total_scanned += 1
+                        except Exception as e:
+                            pass
 
             # 2. STATUS UPDATE
             print(
@@ -242,30 +252,6 @@ def run_event_engine(args):
             # 4. Save resolution cache periodically (every iteration) - save after every 3 iterations
             if iteration and iteration % 3 == 0:
                 client.save_resolution_cache()
-
-            if new_addrs:
-                # Limit to configured number of wallets
-                max_wallets = getattr(args, "wallets_per_iteration", 10)
-                new_addrs = new_addrs[:max_wallets]
-                print(
-                    f"📦 Discovery: Found {len(new_addrs)} new active wallets. Analyzing..."
-                )
-
-                # Analyze new discoveries in parallel
-                with ThreadPoolExecutor(max_workers=args.workers) as executor:
-                    jobs = [
-                        executor.submit(
-                            analyze_trader_wrapper,
-                            client,
-                            addr,
-                            state,
-                            analyzer,
-                            scorer,
-                            args.alchemy_api_key,
-                            args.max_trades,
-                        )
-                        for addr in new_addrs
-                    ]
 
             # 2. STATUS UPDATE
             print(
