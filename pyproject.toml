@@ -56,17 +56,12 @@ poly-legacy = "poly.main:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/poly"]
 
-[tool.uv]
-# UV-specific configuration
-dev-dependencies = [
+[dependency-groups]
+dev = [
   "pytest>=7.0.0",
   "pytest-asyncio>=0.21.0",
   "pytest-cov>=4.0.0",
 ]
-
-[tool.uv.sources]
-# Use Python 3.14 free-threaded build
-python-version = "3.14"
 
 [tool.black]
 line-length = 100
